@@ -3,6 +3,8 @@
 #include <nRF24L01.h>
 #include <RF24.h>
 
+#define MAX_CLIENTS 16
+
 // SPI pins for 2.4GHz transceiver
 #define PIN_R_CE 8
 #define PIN_R_CSN 7
@@ -31,6 +33,16 @@ struct datagram {
     uint8_t node_id;
 };
 
+// State
+static uint32_t readings_handled = 0;
+float node_temps[MAX_CLIENTS];
+float node_pressures[MAX_CLIENTS];
+short node_updated[MAX_CLIENTS];
+
+// Function prototypes
+void handlePendingData();
+void postTempData(short node_id, float temp, float pressure);
+
 void setup() {
     // Setup serial
     Serial.begin(9600);
@@ -47,17 +59,55 @@ void setup() {
     //radio.setRetries(15, 15);
     //radio.setPayloadSize(8);
     radio.openReadingPipe(1, rf_pipe);
+    radio.startListening();
 
     // Dump details for debugging
     radio.printDetails();
+
+    // Initialize the node data table
+    for (int i = 0; i < MAX_CLIENTS; i++){
+        node_updated[i] = 0;
+    }
 }
 
 /*
  * Main loop:
+ * - Check for pending node transmissions
+ * - Iterate over the node data we have stored, and see if any of it is dirty
+ *     - If so, post it to the server
+ * - Adjust relay based on response
  */
 void loop() {
-    if(millis() - last_update_time > update_interval) {
-        last_update_time = millis();
+    // Grab new node data
+    handlePendingData();
+
+    // Check for changed data
+    for (int i = 0; i < MAX_CLIENTS; i++){
+        // For changed node data, POST it
+        if (node_updated[i]) {
+            postTempData(i, node_temps[i], node_pressures[i]);
+        }
     }
     delay(1000);
+}
+
+// Check for pending data, and mark readings as to-be-updated.
+void handlePendingData(){
+    if (radio.available()){
+        // Dump the payloads until we've gotten everything
+        static struct datagram node_data;
+        bool done = false;
+        while (!done){
+            done = radio.read(&node_data, sizeof(struct datagram));
+
+            // Update the node data array and flag the data as changed
+            readings_handled++;
+            node_temps[node_data.node_id] = node_data.temp;
+            node_pressures[node_data.node_id] = node_data.pressure;
+            node_updated[node_data.node_id] = 1;
+        }
+
+        // Ack with the number of node broadcasts we have handled
+        radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
+    }
 }
