@@ -58,9 +58,6 @@ void setup() {
 void loop() {
     if(millis() - last_update_time > update_interval) {
         last_update_time = millis();
-        updateNodeID();
-        updateTemp();
-        sendTemp();
     }
     delay(1000);
 }
