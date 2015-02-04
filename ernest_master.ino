@@ -37,26 +37,55 @@ float node_temps[MAX_CLIENTS];
 float node_pressures[MAX_CLIENTS];
 short node_updated[MAX_CLIENTS];
 
+// Relay
+#define RELAY_PIN 6
+bool G_FURNACE_ON = false;
+
+// LCD
+LiquidCrystal_I2C lcd(0x3F,20,4); //Addr: 0x3F, 20 chars & 4 lines
+
+// Ethernet
+byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
+EthernetClient client;
+char server[] = "nest.rhye.org";
+unsigned long lastConnectionTime = 0;           // last time we connected to the server, in millis
+boolean lastConnected = false;
+
+// Optional on-board sensor
+#define ALTITUDE 4.0
+SFE_BMP180 sensor;
+unsigned long last_temp_conn = 0;
+unsigned temp_poll_time = 15 * 1000;
+bool G_HAS_OWN_SENSOR = true;
+
 // Function prototypes
 void handlePendingData();
-void postTempData(short node_id, float temp, float pressure){
-    printf("Node: %d, temp: ", node_id);
-    Serial.print(temp);
-    Serial.print(", pressure ");
-    Serial.print(pressure);
-    Serial.println(".");
-}
+void postTempData(short node_id, float temp, float pressure);
+void makeHTTPRequest(short node_id, float temp, float pressure);
+void parseHTTPResponse();
+void updateLocalTemps();
 
 void setup() {
     // Setup serial
     Serial.begin(9600);
     printf_begin();
 
-    // Set output pins for the counters
-    pinMode(PIN_CNT_1, OUTPUT);
-    pinMode(PIN_CNT_2, OUTPUT);
-    pinMode(PIN_CNT_3, OUTPUT);
-    pinMode(PIN_CNT_4, OUTPUT);
+    // LCD display
+    lcd.init();
+    lcd.backlight();
+    lcd.setCursor(0, 0);
+    lcd.print("Booting...");
+
+    // Ethernet
+    Ethernet.begin(mac);
+
+    // Relay
+    pinMode(RELAY_PIN, OUTPUT);
+
+    // Temp sensor (if present)
+    if (!sensor.begin()){
+        G_HAS_OWN_SENSOR = false;
+    }
 
     // Setup RF
     radio.begin();
