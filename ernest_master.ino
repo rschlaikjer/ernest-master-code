@@ -20,11 +20,6 @@ RF24 radio(PIN_R_CE, PIN_R_CSN);
 // Pipe address to communicate on
 uint64_t rf_pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 
-// delay between updates, millis
-const unsigned long update_interval = 30*1000;
-// Last time we sent temp data, millis
-unsigned long last_update_time = 0;
-
 struct datagram {
     double temp;
     double pressure;
