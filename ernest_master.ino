@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <nRF24L01.h>
 #include <RF24.h>
+#include "printf.h"
 
 #define MAX_CLIENTS 16
 
@@ -18,9 +19,9 @@
 //// Hardware abstractions
 
 // nRF24L01 radio
-RF24 radio(PIN_R_CSN, PIN_R_CE);
+RF24 radio(PIN_R_CE, PIN_R_CSN);
 // Pipe address to communicate on
-uint64_t rf_pipe = 0xF0F0F0F0E1LL;
+uint64_t rf_pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 
 // delay between updates, millis
 const unsigned long update_interval = 30*1000;
@@ -28,8 +29,8 @@ const unsigned long update_interval = 30*1000;
 unsigned long last_update_time = 0;
 
 struct datagram {
-    float temp;
-    float pressure;
+    double temp;
+    double pressure;
     uint8_t node_id;
 };
 
@@ -41,11 +42,18 @@ short node_updated[MAX_CLIENTS];
 
 // Function prototypes
 void handlePendingData();
-void postTempData(short node_id, float temp, float pressure);
+void postTempData(short node_id, float temp, float pressure){
+    printf("Node: %d, temp: ", node_id);
+    Serial.print(temp);
+    Serial.print(", pressure ");
+    Serial.print(pressure);
+    Serial.println(".");
+}
 
 void setup() {
     // Setup serial
     Serial.begin(9600);
+    printf_begin();
 
     // Set output pins for the counters
     pinMode(PIN_CNT_1, OUTPUT);
@@ -56,9 +64,10 @@ void setup() {
     // Setup RF
     radio.begin();
     radio.enableAckPayload();
-    //radio.setRetries(15, 15);
-    //radio.setPayloadSize(8);
-    radio.openReadingPipe(1, rf_pipe);
+    radio.setRetries(15, 15);
+    radio.setPayloadSize(16);
+    radio.openWritingPipe(rf_pipes[1]);
+    radio.openReadingPipe(1, rf_pipes[0]);
     radio.startListening();
 
     // Dump details for debugging
@@ -87,6 +96,7 @@ void loop() {
         if (node_updated[i]) {
             postTempData(i, node_temps[i], node_pressures[i]);
         }
+        node_updated[i] = 0;
     }
     delay(1000);
 }
@@ -99,7 +109,6 @@ void handlePendingData(){
         bool done = false;
         while (!done){
             done = radio.read(&node_data, sizeof(struct datagram));
-
             // Update the node data array and flag the data as changed
             readings_handled++;
             node_temps[node_data.node_id] = node_data.temp;
