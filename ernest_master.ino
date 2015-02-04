@@ -124,7 +124,108 @@ void loop() {
         }
         node_updated[i] = 0;
     }
+
+    // If we have our own sensor, get data from it too
+    if (G_HAS_OWN_SENSOR){
+        if (millis() - last_temp_conn > temp_poll_time){
+            updateLocalTemps();
+        }
+    }
+
     delay(1000);
+}
+
+void update_lcd(){
+    lcd.setCursor(0, 0);
+    lcd.print("Temp ");
+    //lcd.print(temp);
+    lcd.print("C ");
+    //lcd.print((temp * 9.0 / 5.0) + 32);
+    lcd.print("F");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Furnace ");
+    if (G_FURNACE_ON){
+        lcd.print("on ");
+    } else {
+        lcd.print("off");
+    }
+}
+
+void postTempData(short node_id, float temp, float pressure){
+    printf("Node: %d, temp: ", node_id);
+    Serial.print(temp);
+    Serial.print(", pressure ");
+    Serial.print(pressure);
+    Serial.println(".");
+
+    // Post the data to the webserver
+    makeHTTPRequest(node_id, temp, pressure);
+
+    // Wait for the response to come back
+    while (!client.available()){}
+
+    // Parse & potentially to update the relay
+    parseHTTPResponse();
+}
+
+void makeHTTPRequest(short node_id, float temp, float pressure){
+    if (client.connect(server, 80)){
+        client.print("GET /control?");
+        client.print("node_id=");
+        client.print(node_id, 2);
+        client.print("&temp=");
+        client.print(temp, 2);
+        client.print("&pressure=");
+        client.print(pressure, 2);
+        client.println(" HTTP/1.1");
+        client.println("Host: nest.rhye.org");
+        client.println("User-Agent: arduino-ethernet");
+        client.println("Connection: close");
+        client.println();
+    } else {
+        // Connection failed
+        client.stop();
+    }
+}
+
+void parseHTTPResponse(){
+    // Really cheap and dirty, pretty much just strcmp for burn-y or burn-n
+    // in the response body. Not guaranteed to work with other people's httpds
+    char msg_payload_len = 6;
+    unsigned char post_nl_read = 0;
+    char cmd[msg_payload_len];
+    while (client.available()){
+        char c = client.read();
+        if (c == '\n' || c == '\r'){
+space:
+            post_nl_read = 0;
+            while (client.available() && post_nl_read < msg_payload_len){
+                cmd[post_nl_read] = client.read();
+                if (cmd[post_nl_read] == '\n' || cmd[post_nl_read] == '\r'){
+                    goto space;
+                }
+                post_nl_read++;
+            }
+            if (post_nl_read == 6){
+                if (cmd[0] == 'b'
+                        && cmd[1] == 'u'
+                        && cmd[2] == 'r'
+                        && cmd[3] == 'n'
+                        && cmd[4] == '-'){
+                    if (cmd[5] == 'y'){
+                        // Turn on the heat
+                        digitalWrite(RELAY_PIN, HIGH);
+                        G_FURNACE_ON = 1;
+                    } else if (cmd[5] == 'n'){
+                        // Turn off the heat
+                        digitalWrite(RELAY_PIN, LOW);
+                        G_FURNACE_ON = 0;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Check for pending data, and mark readings as to-be-updated.
@@ -144,5 +245,39 @@ void handlePendingData(){
 
         // Ack with the number of node broadcasts we have handled
         radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
+    }
+}
+void updateLocalTemps(){
+    char status;
+    double temp, pressure, pressure_abs;
+    status = sensor.startTemperature();
+    if (status != 0){
+        // Wait for the measurement to complete:
+        delay(status);
+
+        // Retrieve the completed temperature measurement:
+        // Note that the measurement is stored in the variable T.
+        // Function returns 1 if successful, 0 if failure.
+        status = sensor.getTemperature(temp);
+        if (status != 0){
+            // Start a pressure measurement:
+            // The parameter is the oversampling setting, from 0 to 3
+            // If request is successful, the number of ms to wait is returned.
+            // If request is unsuccessful, 0 is returned.
+            status = sensor.startPressure(3);
+            if (status != 0){
+                // Wait for the measurement to complete:
+                delay(status);
+
+                // Get the pressure (dependent on temperature)
+                status = sensor.getPressure(pressure_abs, temp);
+                if (status != 0){
+                    // The pressure sensor returns abolute pressure, which varies with altitude.
+                    // To remove the effects of altitude, use the sealevel function and your current altitude.
+                    pressure = sensor.sealevel(pressure_abs, ALTITUDE);
+                    postTempData(255, temp, pressure);
+                }
+            }
+        }
     }
 }
