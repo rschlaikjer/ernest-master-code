@@ -13,12 +13,6 @@
 #define PIN_R_CE 8
 #define PIN_R_CSN 7
 
-// Output pins for client LED counters
-#define PIN_CNT_1 6
-#define PIN_CNT_2 5
-#define PIN_CNT_3 4
-#define PIN_CNT_4 3
-
 //// Hardware abstractions
 
 // nRF24L01 radio
