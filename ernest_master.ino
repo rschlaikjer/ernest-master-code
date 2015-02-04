@@ -1,5 +1,8 @@
 #include <SPI.h>
 #include <Wire.h>
+#include <Ethernet.h>
+#include <SFE_BMP180.h>
+#include <LiquidCrystal_I2C.h>
 #include <nRF24L01.h>
 #include <RF24.h>
 #include "printf.h"
