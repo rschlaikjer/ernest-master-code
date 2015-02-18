@@ -6,17 +6,12 @@
 #include <RF24.h>
 #include "printf.h"
 
-#define WIRELESS 0
-#define ETHERNET 1
-
-#if ETHERNET
+// Ethernet client library
 #include <Ethernet.h>
-#endif
 
-#if WIRELESS
+// Wifi client libs
 #include <Adafruit_CC3000.h>
 #include <ccspi.h>
-#endif
 
 #define MAX_CLIENTS 16
 
@@ -55,17 +50,20 @@ unsigned long lcd_last_node_reset = 0;
 int lcd_current_node = 0;
 short lcd_node_active[MAX_CLIENTS];
 
+// IP General
 char server[] = "nest.rhye.org";
+#define PIN_IP_SELECTOR 0
+enum IPDEV { IPDEV_WIFI, IPDEV_ETHERNET };
+int IP_DEVICE = IPDEV_ETHERNET;
 
-#if ETHERNET
 // Ethernet
 byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
-EthernetClient client;
+EthernetClient client_eth;
 unsigned long lastConnectionTime = 0;           // last time we connected to the server, in millis
 boolean lastConnected = false;
-#endif
 
-#if WIRELESS
+
+// Wifi
 #define PIN_WIFI_IRQ 2
 #define PIN_WIFI_VBAT 5
 #define PIN_WIFI_CS 10
@@ -76,13 +74,12 @@ boolean lastConnected = false;
 
 Adafruit_CC3000 cc3000 = Adafruit_CC3000(PIN_WIFI_CS, PIN_WIFI_IRQ, PIN_WIFI_VBAT, SPI_CLOCK_DIVIDER);
 
-Adafruit_CC3000_Client client;
+Adafruit_CC3000_Client client_wifi;
 
 const unsigned long
 dhcpTimeout     = 60L * 1000L, // Max time to wait for address from DHCP
                 connectTimeout  = 15L * 1000L, // Max time to wait for server connection
                 responseTimeout = 15L * 1000L; // Max time to wait for data from server
-#endif
 
 // Optional on-board sensor
 #define ALTITUDE 4.0
@@ -101,7 +98,6 @@ void updateLocalTemps();
 void updateLCD();
 void setLCDDebugLine(char* msg);
 
-#if WIRELESS
 uint16_t checkFirmwareVersion(void) {
     uint8_t  major, minor;
     uint16_t version = 0;
@@ -133,12 +129,14 @@ bool displayConnectionDetails(void) {
     return true;
 }
 
-#endif
 
 void setup() {
     // Setup serial
     Serial.begin(9600);
     printf_begin();
+
+    // Wait for debugger, pins to stabilize
+    delay(3000);
 
     // LCD display
     lcd.init();
@@ -146,43 +144,50 @@ void setup() {
     lcd.setCursor(0, 0);
     lcd.print("Booting...");
 
-#if ETHERNET
-    // Ethernet
-    Ethernet.begin(mac);
-#endif
-
-#if WIRELESS
-    if (!cc3000.begin()){
-        setLCDDebugLine((char *)"Failed to init cc3000");
-        while (1);
+    // Read the jumper to determine if we should use wifi or ethernet
+    pinMode(PIN_IP_SELECTOR, INPUT);
+    delay(1000);
+    if (digitalRead(PIN_IP_SELECTOR)){
+        IP_DEVICE = IPDEV_WIFI;
+    } else {
+        IP_DEVICE = IPDEV_ETHERNET;
     }
 
-    uint16_t firmware = checkFirmwareVersion();
-    if ((firmware != 0x113) && (firmware != 0x118)) {
-        setLCDDebugLine((char *)"Bad CC3000 firmware");
-        while (1);
+    if (IP_DEVICE == IPDEV_ETHERNET){
+        // Ethernet
+        Ethernet.begin(mac);
+    } else {
+        if (!cc3000.begin()){
+            setLCDDebugLine((char *)"Failed to init cc3000");
+            while (1);
+        }
+
+        uint16_t firmware = checkFirmwareVersion();
+        if ((firmware != 0x113) && (firmware != 0x118)) {
+            setLCDDebugLine((char *)"Bad CC3000 firmware");
+            while (1);
+        }
+
+        if (!cc3000.deleteProfiles()){
+            setLCDDebugLine((char *)"CC3000 profiles exn");
+            while (1);
+        }
+
+        if (!cc3000.connectToAP(WIFI_SSID, WIFI_KEY, WIFI_CIPHER)){
+            setLCDDebugLine((char *)"Wifi connect failed");
+            while (1);
+        }
+
+        uint32_t time = millis();
+        for (; !cc3000.checkDHCP() && ((millis() - time) < dhcpTimeout); delay(100));
+
+        if (!cc3000.checkDHCP()){
+            setLCDDebugLine((char *)"Failed to DHCP");
+            while (1);
+        }
+
+        while(!displayConnectionDetails());
     }
-
-    if (!cc3000.deleteProfiles()){
-        setLCDDebugLine((char *)"CC3000 profiles exn");
-        while (1);
-    }
-
-    if (!cc3000.connectToAP(WIFI_SSID, WIFI_KEY, WIFI_CIPHER)){
-        setLCDDebugLine((char *)"Wifi connect failed");
-        while (1);
-    }
-
-    uint32_t time = millis();
-    for (; !cc3000.checkDHCP() && ((millis() - time) < dhcpTimeout); delay(100));
-
-    if (!cc3000.checkDHCP()){
-        setLCDDebugLine((char *)"Failed to DHCP");
-        while (1);
-    }
-
-    while(!displayConnectionDetails());
-#endif
 
     // Relay
     pinMode(RELAY_PIN, OUTPUT);
@@ -336,75 +341,84 @@ void postTempData(short node_id, float temp, float pressure){
     makeHTTPRequest(node_id, temp, pressure);
 
 
-    #if WIRELESS
-    client.close();
-    #endif
-
-    #if ETHERNET
-    client.stop();
-    #endif
+    if (IP_DEVICE == IPDEV_WIFI){
+        client_wifi.close();
+    } else {
+        client_eth.stop();
+    }
 }
 
 void writeHTTPRequest(short node_id, float temp, float pressure){
-    client.print("GET /control?");
-    client.print("node_id=");
-    client.print(node_id);
-    client.print("&temp=");
-    client.print(temp, 2);
-    client.print("&pressure=");
-    client.print(pressure, 2);
-    client.println(" HTTP/1.1");
-    client.println("Host: nest.rhye.org");
-    client.println("User-Agent: arduino-ethernet");
-    client.println("Connection: close");
-    client.println();
-}
-
-#if WIRELESS
-void makeHTTPRequest(short node_id, float temp, float pressure){
-    uint32_t ip;
-    cc3000.getHostByName((char *)server, &ip);
-    uint32_t time = millis();
-    do {
-        client = cc3000.connectTCP(ip, 80);
-    } while(!client.connected() && ((millis() - time) < connectTimeout));
-
-    if(!client.connected()) {
-        setLCDDebugLine((char *)"Connection failed");
-        return;
-    }
-
-    writeHTTPRequest(node_id, temp, pressure);
-
-    parseHTTPResponse();
-}
-#endif
-
-#if ETHERNET
-void makeHTTPRequest(short node_id, float temp, float pressure){
-    if (client.connect(server, 80)){
-        writeHTTPRequest(node_id, temp, pressure);
+    if (IP_DEVICE == IPDEV_WIFI){
+        client_wifi.print("GET /control?");
+        client_wifi.print("node_id=");
+        client_wifi.print(node_id);
+        client_wifi.print("&temp=");
+        client_wifi.print(temp, 2);
+        client_wifi.print("&pressure=");
+        client_wifi.print(pressure, 2);
+        client_wifi.println(" HTTP/1.1");
+        client_wifi.println("Host: nest.rhye.org");
+        client_wifi.println("User-Agent: arduino-ethernet");
+        client_wifi.println("Connection: close");
+        client_wifi.println();
     } else {
-        // Connection failed
-        //Serial.println("Failed to make an HTTP connection!");
-        client.stop();
+        client_eth.print("GET /control?");
+        client_eth.print("node_id=");
+        client_eth.print(node_id);
+        client_eth.print("&temp=");
+        client_eth.print(temp, 2);
+        client_eth.print("&pressure=");
+        client_eth.print(pressure, 2);
+        client_eth.println(" HTTP/1.1");
+        client_eth.println("Host: nest.rhye.org");
+        client_eth.println("User-Agent: arduino-ethernet");
+        client_eth.println("Connection: close");
+        client_eth.println();
     }
+}
 
-    // Wait for the response to come back
-    //Serial.println("Waiting for client to be available...");
-    int retries;
-    for (retries = 0; retries < 10; retries++){
-        if (client.available()){
-            // Parse & potentially to update the relay
-            //Serial.println("Parsing resp...");
-            parseHTTPResponse();
-            client.stop();
+void makeHTTPRequest(short node_id, float temp, float pressure){
+    if (IP_DEVICE == IPDEV_WIFI){
+        uint32_t ip;
+        cc3000.getHostByName((char *)server, &ip);
+        uint32_t time = millis();
+        do {
+            client_wifi = cc3000.connectTCP(ip, 80);
+        } while(!client_wifi.connected() && ((millis() - time) < connectTimeout));
+
+        if(!client_wifi.connected()) {
+            setLCDDebugLine((char *)"Connection failed");
             return;
         }
-        delay(100);
+
+        writeHTTPRequest(node_id, temp, pressure);
+
+        parseHTTPResponse();
+    } else {
+        if (client_eth.connect(server, 80)){
+            writeHTTPRequest(node_id, temp, pressure);
+        } else {
+            // Connection failed
+            //Serial.println("Failed to make an HTTP connection!");
+            client_eth.stop();
+        }
+
+        // Wait for the response to come back
+        //Serial.println("Waiting for client to be available...");
+        int retries;
+        for (retries = 0; retries < 10; retries++){
+            if (client_eth.available()){
+                // Parse & potentially to update the relay
+                //Serial.println("Parsing resp...");
+                parseHTTPResponse();
+                client_eth.stop();
+                return;
+            }
+            delay(100);
+        }
     }
 }
-#endif
 
 void parseHTTPResponse(){
     // Really cheap and dirty, pretty much just strcmp for burn-y or burn-n
@@ -412,13 +426,20 @@ void parseHTTPResponse(){
     char msg_payload_len = 6;
     unsigned char post_nl_read = 0;
     char cmd[msg_payload_len];
-    while (client.available()){
-        char c = client.read();
+    char c;
+    while ((IP_DEVICE == IPDEV_WIFI) ? client_wifi.available() : client_eth.available()){
+        c = (IP_DEVICE == IPDEV_WIFI) ? client_wifi.read() : client_eth.read();
         if (c == '\n' || c == '\r'){
 space:
             post_nl_read = 0;
-            while (client.available() && post_nl_read < msg_payload_len){
-                cmd[post_nl_read] = client.read();
+            while (
+                ((IP_DEVICE == IPDEV_WIFI) ? client_wifi.available() : client_eth.available())
+             && (post_nl_read < msg_payload_len)){
+                if (IP_DEVICE == IPDEV_WIFI){
+                    cmd[post_nl_read] = client_wifi.read();
+                } else {
+                    cmd[post_nl_read] = client_eth.read();
+                }
                 if (cmd[post_nl_read] == '\n' || cmd[post_nl_read] == '\r'){
                     goto space;
                 }
