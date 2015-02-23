@@ -351,16 +351,15 @@ uint64_t parity(double t, double p, double h, uint64_t node_id){
 void handlePendingData(){
     setLCDDebugLine((char*)"Listen to radio...");
 
-    // Don't get caught in an infinite radio loop - break out after handling
-    // more than a reasonable number of packets.
-    int packets_read = 0;
-    if (radio.available() && packets_read < 25){
-        packets_read++;
-
-        // Dump the payloads until we've gotten everything
+    if (radio.available()){
+        // Dump the payloads until we've gotten everything or hit the cap
+        // Don't get caught in an infinite radio loop - break out after handling
+        // more than a reasonable number of packets.
+        int packets_read = 0;
         static struct datagram node_data;
         bool done = false;
-        while (!done){
+        while (!done && packets_read < 25){
+            packets_read++;
             done = radio.read(&node_data, sizeof(struct datagram));
             // Ack with the number of node broadcasts we have handled
             radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
@@ -392,9 +391,9 @@ void handlePendingData(){
             node_updated[node_data.node_id] = 1;
             lcd_node_active[node_data.node_id] = 1;
         }
-
     }
 }
+
 void updateLocalTemps(){
     setLCDDebugLine((char*)"Taking a reading...");
     char status;
