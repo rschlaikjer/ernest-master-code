@@ -29,6 +29,7 @@ struct datagram {
 static uint32_t readings_handled = 0;
 double node_temps[MAX_CLIENTS];
 double node_pressures[MAX_CLIENTS];
+double node_humidities[MAX_CLIENTS];
 short node_updated[MAX_CLIENTS];
 uint8_t G_LAST_UPDATED_NODE;
 double G_LAST_UPDATED_TEMP, G_LAST_UPDATED_PRESSURE;
@@ -61,8 +62,8 @@ double G_LOCAL_TEMP, G_LOCAL_PRESSURE;
 
 // Function prototypes
 void handlePendingData();
-void postTempData(short node_id, float temp, float pressure);
-void makeHTTPRequest(short node_id, float temp, float pressure);
+void postTempData(short node_id, float temp, float pressure, float humidity);
+void makeHTTPRequest(short node_id, float temp, float pressure, float humidity);
 void parseHTTPResponse();
 void updateLocalTemps();
 void updateLCD();
@@ -124,7 +125,7 @@ void loop() {
     for (int i = 0; i < MAX_CLIENTS; i++){
         // For changed node data, POST it
         if (node_updated[i]) {
-            postTempData(i, node_temps[i], node_pressures[i]);
+            postTempData(i, node_temps[i], node_pressures[i], node_humidities[i]);
         }
         node_updated[i] = 0;
     }
@@ -220,7 +221,7 @@ void updateLCD(){
     }
 }
 
-void postTempData(short node_id, float temp, float pressure){
+void postTempData(short node_id, float temp, float pressure, float humidity){
     setLCDDebugLine((char*)"Posting reading...");
     Serial.println("");
     printf("Node: %d, temp: ", node_id);
@@ -231,7 +232,7 @@ void postTempData(short node_id, float temp, float pressure){
 
     // Post the data to the webserver
     //Serial.println("Making HTTP request...");
-    makeHTTPRequest(node_id, temp, pressure);
+    makeHTTPRequest(node_id, temp, pressure, humidity);
 
     // Wait for the response to come back
     //Serial.println("Waiting for client to be available...");
@@ -249,15 +250,23 @@ void postTempData(short node_id, float temp, float pressure){
     client.stop();
 }
 
-void makeHTTPRequest(short node_id, float temp, float pressure){
+void makeHTTPRequest(short node_id, float temp, float pressure, float humidity){
     if (client.connect(server, 80)){
         client.print("GET /control?");
         client.print("node_id=");
         client.print(node_id);
-        client.print("&temp=");
-        client.print(temp, 2);
-        client.print("&pressure=");
-        client.print(pressure, 2);
+        if (temp != NAN){
+            client.print("&temp=");
+            client.print(temp, 2);
+        }
+        if (pressure != NAN){
+            client.print("&pressure=");
+            client.print(pressure, 2);
+        }
+        if (humidity != NAN){
+            client.print("&humidity=");
+            client.print(humidity, 2);
+        }
         client.println(" HTTP/1.1");
         client.println("Host: nest.rhye.org");
         client.println("User-Agent: arduino-ethernet");
@@ -379,6 +388,7 @@ void handlePendingData(){
             readings_handled++;
             node_temps[node_data.node_id] = node_data.temp;
             node_pressures[node_data.node_id] = node_data.pressure;
+            node_humidities[node_data.node_id] = node_data.humidity;
             node_updated[node_data.node_id] = 1;
             lcd_node_active[node_data.node_id] = 1;
         }
@@ -414,7 +424,7 @@ void updateLocalTemps(){
                     // The pressure sensor returns abolute pressure, which varies with altitude.
                     // To remove the effects of altitude, use the sealevel function and your current altitude.
                     pressure = sensor.sealevel(pressure_abs, ALTITUDE);
-                    postTempData(255, temp, pressure);
+                    postTempData(255, temp, pressure, NAN);
                     G_LOCAL_TEMP = temp;
                     G_LOCAL_PRESSURE = pressure;
                 }
