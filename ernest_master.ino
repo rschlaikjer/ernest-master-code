@@ -68,6 +68,7 @@ void parseHTTPResponse();
 void updateLocalTemps();
 void updateLCD();
 void setLCDDebugLine(char* msg);
+void init_NRF24();
 
 void setup() {
     // Setup serial
@@ -92,6 +93,15 @@ void setup() {
     }
 
     // Setup RF
+    init_NRF24();
+
+    // Initialize the node data table
+    for (int i = 0; i < MAX_CLIENTS; i++){
+        node_updated[i] = 0;
+    }
+}
+
+void init_NRF24(){
     radio.begin();
     radio.enableAckPayload();
     radio.setRetries(15, 15);
@@ -102,11 +112,6 @@ void setup() {
 
     // Dump details for debugging
     radio.printDetails();
-
-    // Initialize the node data table
-    for (int i = 0; i < MAX_CLIENTS; i++){
-        node_updated[i] = 0;
-    }
 }
 
 /*
@@ -358,54 +363,59 @@ uint64_t parity(double t, double p, double h, uint64_t node_id){
 void handlePendingData(){
     setLCDDebugLine((char*)"Listen to radio...");
 
-    if (radio.available()){
-        // Dump the payloads until we've gotten everything or hit the cap
-        // Don't get caught in an infinite radio loop - break out after handling
-        // more than a reasonable number of packets.
-        int packets_read = 0;
-        static struct datagram node_data;
-        bool done = false;
-        while (!done && packets_read < 25){
-            packets_read++;
-            done = radio.read(&node_data, sizeof(struct datagram));
+    // Check if the radio is operating properly,
+    // and if not reset it.
+    if(radio.failureDetected){
+        Serial.println("Radio failed! Restarting.");
+        init_NRF24();
+        radio.failureDetected = 0;
+    }
 
-            // Check the parity
-            uint64_t local_parity = parity(
-                node_data.temp,
-                node_data.pressure,
-                node_data.humidity,
-                node_data.node_id
-            );
+    // Dump the payloads until we've gotten everything or hit the cap
+    // Don't get caught in an infinite radio loop - break out after handling
+    // more than a reasonable number of packets.
+    int packets_read = 0;
+    static struct datagram node_data;
+    while (radio.available() && packets_read < 25){
+        packets_read++;
+        radio.read(&node_data, sizeof(struct datagram));
 
-            // If the parity is wrong, don't use the reading
-            if (node_data.parity == 0 || local_parity != node_data.parity){
-                Serial.println("Parity mismatch for node ");
-                Serial.println(node_data.node_id);
-                print_uint64_bin(local_parity);
-                Serial.println("");
-                print_uint64_bin(node_data.parity);
-                Serial.println("");
-                Serial.print("Failed data: Temp: ");
-                Serial.print(node_data.temp);
-                Serial.print(" Pressure: ");
-                Serial.print(node_data.pressure);
-                Serial.print(" Humidity: ");
-                Serial.println(node_data.humidity);
-                continue;
-            }
+        // Check the parity
+        uint64_t local_parity = parity(
+            node_data.temp,
+            node_data.pressure,
+            node_data.humidity,
+            node_data.node_id
+        );
 
-            // Ack with the number of node broadcasts we have handled
-            // Ack doesn't get sent in the case of a bad parity
-            radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
-
-            // Update the node data array and flag the data as changed
-            readings_handled++;
-            node_temps[node_data.node_id] = node_data.temp;
-            node_pressures[node_data.node_id] = node_data.pressure;
-            node_humidities[node_data.node_id] = node_data.humidity;
-            node_updated[node_data.node_id] = 1;
-            lcd_node_active[node_data.node_id] = 1;
+        // If the parity is wrong, don't use the reading
+        if (node_data.parity == 0 || local_parity != node_data.parity){
+            Serial.println("Parity mismatch for node ");
+            Serial.println(node_data.node_id);
+            print_uint64_bin(local_parity);
+            Serial.println("");
+            print_uint64_bin(node_data.parity);
+            Serial.println("");
+            Serial.print("Failed data: Temp: ");
+            Serial.print(node_data.temp);
+            Serial.print(" Pressure: ");
+            Serial.print(node_data.pressure);
+            Serial.print(" Humidity: ");
+            Serial.println(node_data.humidity);
+            continue;
         }
+
+        // Ack with the number of node broadcasts we have handled
+        // Ack doesn't get sent in the case of a bad parity
+        radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
+
+        // Update the node data array and flag the data as changed
+        readings_handled++;
+        node_temps[node_data.node_id] = node_data.temp;
+        node_pressures[node_data.node_id] = node_data.pressure;
+        node_humidities[node_data.node_id] = node_data.humidity;
+        node_updated[node_data.node_id] = 1;
+        lcd_node_active[node_data.node_id] = 1;
     }
 }
 
