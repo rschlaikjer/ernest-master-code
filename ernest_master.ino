@@ -177,6 +177,13 @@ void setLCDNodeTemp(int row){
                 break;
             }
         }
+
+        // If we cycled back through and found no active nodes,
+        // don't put anything on the display.
+        if (i == 16 && !lcd_node_active[lcd_current_node] ){
+            return;
+        }
+
         lcd.setCursor(0, row);
         lcd.print("N");
         lcd.print(lcd_current_node);
