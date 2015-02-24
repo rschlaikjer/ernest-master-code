@@ -368,8 +368,6 @@ void handlePendingData(){
         while (!done && packets_read < 25){
             packets_read++;
             done = radio.read(&node_data, sizeof(struct datagram));
-            // Ack with the number of node broadcasts we have handled
-            radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
 
             // Check the parity
             uint64_t local_parity = parity(
@@ -387,8 +385,18 @@ void handlePendingData(){
                 Serial.println("");
                 print_uint64_bin(node_data.parity);
                 Serial.println("");
+                Serial.print("Failed data: Temp: ");
+                Serial.print(node_data.temp);
+                Serial.print(" Pressure: ");
+                Serial.print(node_data.pressure);
+                Serial.print(" Humidity: ");
+                Serial.println(node_data.humidity);
                 continue;
             }
+
+            // Ack with the number of node broadcasts we have handled
+            // Ack doesn't get sent in the case of a bad parity
+            radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
 
             // Update the node data array and flag the data as changed
             readings_handled++;
