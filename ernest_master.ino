@@ -265,7 +265,7 @@ void makeHTTPRequest(short node_id, float temp, float pressure, float humidity){
         }
         if (humidity != NAN){
             client.print("&humidity=");
-            client.print(humidity, 2);
+            client.print(humidity, 5);
         }
         client.println(" HTTP/1.1");
         client.println("Host: nest.rhye.org");
