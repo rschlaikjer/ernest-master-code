@@ -352,10 +352,13 @@ uint64_t dec_of_float(double d){
 }
 
 uint64_t parity(double t, double p, double h, uint64_t node_id){
-    uint64_t ret = node_id;
-    ret = ret ^ dec_of_float(t);
-    ret = ret ^ dec_of_float(p);
-    ret = ret ^ dec_of_float(h);
+    uint64_t ret = 0;
+    for(unsigned i=0; i < sizeof(uint64_t); i++){
+        ret |= (node_id << (i * 8));
+    }
+    ret = ret ^ (dec_of_float(t) ^ 0x5555555555555555LL);
+    ret = ret ^ (dec_of_float(p) ^ 0x3333333333333333LL);
+    ret = ret ^ (dec_of_float(h) ^ 0xF0F0F0F0F0F0F0F0LL);
     return ret;
 }
 
