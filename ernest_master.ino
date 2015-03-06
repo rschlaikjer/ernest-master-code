@@ -1,19 +1,18 @@
 #include <SPI.h>
 #include <Wire.h>
-#include <Ethernet.h>
+#include <EtherCard.h>
 #include <SFE_BMP180.h>
 #include <LiquidCrystal_I2C.h>
 #include <nRF24L01.h>
 #include <RF24.h>
-#include "printf.h"
 
 #define MAX_CLIENTS 16
 
 //// Hardware abstractions
 
 // nRF24L01 radio
-#define PIN_R_CE 8
-#define PIN_R_CSN 7
+#define PIN_R_CE 10
+#define PIN_R_CSN 9
 RF24 radio(PIN_R_CE, PIN_R_CSN);
 uint64_t rf_pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL };
 
@@ -26,7 +25,6 @@ struct datagram {
 };
 
 // State
-static uint32_t readings_handled = 0;
 double node_temps[MAX_CLIENTS];
 double node_pressures[MAX_CLIENTS];
 double node_humidities[MAX_CLIENTS];
@@ -35,7 +33,7 @@ uint8_t G_LAST_UPDATED_NODE;
 double G_LAST_UPDATED_TEMP, G_LAST_UPDATED_PRESSURE;
 
 // Relay
-#define RELAY_PIN 6
+#define RELAY_PIN 5
 bool G_FURNACE_ON = false;
 
 // LCD
@@ -47,8 +45,11 @@ short lcd_node_active[MAX_CLIENTS];
 
 // Ethernet
 byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED};
-EthernetClient client;
-char server[] = "nest.rhye.org";
+byte myip[] = { 192, 168, 0, 5 };
+byte gwip[] = { 192, 168, 0, 1 };
+byte Ethernet::buffer[256];
+#define GET_ARG_BUFLEN 64
+char value_buffer[GET_ARG_BUFLEN];
 unsigned long lastConnectionTime = 0;           // last time we connected to the server, in millis
 boolean lastConnected = false;
 
@@ -63,26 +64,43 @@ double G_LOCAL_TEMP, G_LOCAL_PRESSURE;
 // Function prototypes
 void handlePendingData();
 void postTempData(short node_id, float temp, float pressure, float humidity);
-void makeHTTPRequest(short node_id, float temp, float pressure, float humidity);
 void parseHTTPResponse();
 void updateLocalTemps();
 void updateLCD();
-void setLCDDebugLine(char* msg);
+void setLCDDebugLine(const char* msg);
 void init_NRF24();
+void http_handle_resp(byte status, word off, word len);
+
+// Program memory those strings eh
+char prog_buffer[100];
+const char LCD_BOOT[] = "Booting...";
+const char LCD_TAKE_READING[] = "Taking a reading...";
+const char LCD_ETH_FAIL[] = "Ethernet init fail";
+const char LCD_LISTEN_RADIO[] = "Listen to radio";
+const char LCD_BLANK[] = "";
+// Ethernet
+const char HTTP_PATH[] = "/control";
+const char HTTP_ARGS[] = "?node_id=%d&temp=%s&pressure=%s&humidity=%s";
+const char HTTP_SERVER[] = "nest.rhye.org";
 
 void setup() {
     // Setup serial
     Serial.begin(9600);
-    printf_begin();
 
     // LCD display
     lcd.init();
     lcd.backlight();
     lcd.setCursor(0, 0);
-    lcd.print("Booting...");
+    lcd.print(LCD_BOOT);
 
     // Ethernet
-    Ethernet.begin(mac);
+    if (ether.begin(sizeof Ethernet::buffer, mac, 6) == 0){
+        setLCDDebugLine(LCD_ETH_FAIL);
+        while (1);
+    }
+
+    ether.staticSetup(myip, gwip);
+    ether.copyIp(ether.hisip, gwip);
 
     // Relay
     pinMode(RELAY_PIN, OUTPUT);
@@ -90,6 +108,7 @@ void setup() {
     // Temp sensor (if present)
     if (!sensor.begin()){
         G_HAS_OWN_SENSOR = false;
+    } else {
     }
 
     // Setup RF
@@ -122,6 +141,10 @@ void init_NRF24(){
  * - Adjust relay based on response
  */
 void loop() {
+    // Handle low-level ethernet data
+    word len = ether.packetReceive();
+    ether.packetLoop(len);
+
     // Grab new node data
     Serial.print(".");
     handlePendingData();
@@ -143,13 +166,13 @@ void loop() {
         }
     }
 
-    setLCDDebugLine((char*)"");
+    setLCDDebugLine(LCD_BLANK);
     updateLCD();
 
     delay(1000);
 }
 
-void setLCDDebugLine(char* msg){
+void setLCDDebugLine(const char* msg){
     lcd.setCursor(0, 3);
     lcd.print(msg);
 
@@ -233,77 +256,45 @@ void updateLCD(){
     }
 }
 
+void sprint_double( double val, char* buf){
+    int ival = int(val);
+    unsigned int frac;
+    if(val >= 0)
+        frac = (val - ival) * 10000;
+    else
+        frac = (ival- val ) * 10000;
+
+    sprintf(buf, "%d.%d", ival, frac);
+}
+
 void postTempData(short node_id, float temp, float pressure, float humidity){
-    setLCDDebugLine((char*)"Posting reading...");
-    Serial.println("");
-    printf("Node: %d, temp: ", node_id);
-    Serial.print(temp);
-    Serial.print(", pressure ");
-    Serial.print(pressure);
-    Serial.println(".");
+    char tmp_temp[16] = { 0 };
+    char tmp_pressure[16] = { 0 };
+    char tmp_humid[16] = { 0 };
 
-    // Post the data to the webserver
-    //Serial.println("Making HTTP request...");
-    makeHTTPRequest(node_id, temp, pressure, humidity);
+    sprint_double(temp, tmp_temp);
+    sprint_double(pressure, tmp_pressure);
+    sprint_double(humidity, tmp_humid);
 
-    // Wait for the response to come back
-    //Serial.println("Waiting for client to be available...");
-    int retries;
-    for (retries = 0; retries < 10; retries++){
-        if (client.available()){
-            // Parse & potentially to update the relay
-            //Serial.println("Parsing resp...");
-            parseHTTPResponse();
-            client.stop();
-            return;
-        }
-        delay(100);
-    }
-    client.stop();
+    sprintf(value_buffer, HTTP_ARGS, node_id, tmp_temp, tmp_pressure, tmp_humid);
+
+    ether.browseUrl(HTTP_PATH, value_buffer, HTTP_SERVER, http_handle_resp);
 }
 
-void makeHTTPRequest(short node_id, float temp, float pressure, float humidity){
-    if (client.connect(server, 80)){
-        client.print("GET /control?");
-        client.print("node_id=");
-        client.print(node_id);
-        if (temp != NAN){
-            client.print("&temp=");
-            client.print(temp, 2);
-        }
-        if (pressure != NAN){
-            client.print("&pressure=");
-            client.print(pressure, 2);
-        }
-        if (humidity != NAN){
-            client.print("&humidity=");
-            client.print(humidity, 5);
-        }
-        client.println(" HTTP/1.1");
-        client.println("Host: nest.rhye.org");
-        client.println("User-Agent: arduino-ethernet");
-        client.println("Connection: close");
-        client.println();
-    } else {
-        // Connection failed
-        //Serial.println("Failed to make an HTTP connection!");
-        client.stop();
-    }
-}
-
-void parseHTTPResponse(){
+void http_handle_resp(byte status, word off, word len){
     // Really cheap and dirty, pretty much just strcmp for burn-y or burn-n
     // in the response body. Not guaranteed to work with other people's httpds
     char msg_payload_len = 6;
     unsigned char post_nl_read = 0;
     char cmd[msg_payload_len];
-    while (client.available()){
-        char c = client.read();
+    Ethernet::buffer[off+len < 256 ? off+len : 255] = 0;
+    for (; Ethernet::buffer[off]; off++){
+        char c = Ethernet::buffer[off];
         if (c == '\n' || c == '\r'){
 space:
             post_nl_read = 0;
-            while (client.available() && post_nl_read < msg_payload_len){
-                cmd[post_nl_read] = client.read();
+            while (Ethernet::buffer[off] && post_nl_read < msg_payload_len){
+                cmd[post_nl_read] = Ethernet::buffer[++off];
                 if (cmd[post_nl_read] == '\n' || cmd[post_nl_read] == '\r'){
                     goto space;
                 }
@@ -319,26 +310,16 @@ space:
                         // Turn on the heat
                         digitalWrite(RELAY_PIN, HIGH);
                         G_FURNACE_ON = 1;
+                        return;
                     } else if (cmd[5] == 'n'){
                         // Turn off the heat
                         digitalWrite(RELAY_PIN, LOW);
                         G_FURNACE_ON = 0;
+                        return;
                     }
                 }
             }
         }
-    }
-}
-
-void print_uint64_bin(uint64_t u){
-    uint64_t b = 1;
-    for (uint64_t i = 0; i < 64; i++){
-        if (u & b){
-            Serial.print("1");
-        } else {
-            Serial.print("0");
-        }
-        b = b << 1;
     }
 }
 
@@ -364,12 +345,11 @@ uint64_t parity(double t, double p, double h, uint64_t node_id){
 
 // Check for pending data, and mark readings as to-be-updated.
 void handlePendingData(){
-    setLCDDebugLine((char*)"Listen to radio...");
+    setLCDDebugLine(LCD_LISTEN_RADIO);
 
     // Check if the radio is operating properly,
     // and if not reset it.
     if(radio.failureDetected){
-        Serial.println("Radio failed! Restarting.");
         init_NRF24();
         radio.failureDetected = 0;
     }
@@ -385,35 +365,23 @@ void handlePendingData(){
 
         // Check the parity
         uint64_t local_parity = parity(
-            node_data.temp,
-            node_data.pressure,
-            node_data.humidity,
-            node_data.node_id
-        );
+                node_data.temp,
+                node_data.pressure,
+                node_data.humidity,
+                node_data.node_id
+                );
 
         // If the parity is wrong, don't use the reading
         if (node_data.parity == 0 || local_parity != node_data.parity){
-            Serial.println("Parity mismatch for node ");
-            Serial.println(node_data.node_id);
-            print_uint64_bin(local_parity);
-            Serial.println("");
-            print_uint64_bin(node_data.parity);
-            Serial.println("");
-            Serial.print("Failed data: Temp: ");
-            Serial.print(node_data.temp);
-            Serial.print(" Pressure: ");
-            Serial.print(node_data.pressure);
-            Serial.print(" Humidity: ");
-            Serial.println(node_data.humidity);
             continue;
         }
 
         // Ack with the number of node broadcasts we have handled
         // Ack doesn't get sent in the case of a bad parity
-        radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
+        char ack = 'Y';
+        radio.writeAckPayload( 1, &ack, sizeof(char) );
 
         // Update the node data array and flag the data as changed
-        readings_handled++;
         node_temps[node_data.node_id] = node_data.temp;
         node_pressures[node_data.node_id] = node_data.pressure;
         node_humidities[node_data.node_id] = node_data.humidity;
@@ -423,7 +391,7 @@ void handlePendingData(){
 }
 
 void updateLocalTemps(){
-    setLCDDebugLine((char*)"Taking a reading...");
+    setLCDDebugLine(LCD_TAKE_READING);
     char status;
     double temp, pressure, pressure_abs;
     status = sensor.startTemperature();

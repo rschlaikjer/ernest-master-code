@@ -1,4 +1,4 @@
-BOARD_TAG = ethernet
+BOARD_TAG = uno
 ARDUINO_LIBS =
 
 CFLAGS:=
