@@ -25,6 +25,7 @@ struct datagram {
 };
 
 // State
+static uint32_t readings_handled = 0;
 double node_temps[MAX_CLIENTS];
 double node_pressures[MAX_CLIENTS];
 double node_humidities[MAX_CLIENTS];
@@ -278,7 +279,7 @@ void postTempData(short node_id, float temp, float pressure, float humidity){
 
     sprintf(value_buffer, HTTP_ARGS, node_id, tmp_temp, tmp_pressure, tmp_humid);
 
-    ether.browseUrl(HTTP_PATH, value_buffer, HTTP_SERVER, http_handle_resp);
+    ether.browseUrl(PSTR("/control"), value_buffer, PSTR("nest.rhye.org"), http_handle_resp);
 }
 
 void http_handle_resp(byte status, word off, word len){
@@ -290,11 +291,13 @@ void http_handle_resp(byte status, word off, word len){
     Ethernet::buffer[off+len < 256 ? off+len : 255] = 0;
     for (; Ethernet::buffer[off]; off++){
         char c = Ethernet::buffer[off];
+        Serial.print(c);
         if (c == '\n' || c == '\r'){
 space:
             post_nl_read = 0;
             while (Ethernet::buffer[off] && post_nl_read < msg_payload_len){
                 cmd[post_nl_read] = Ethernet::buffer[++off];
+                Serial.print(cmd[post_nl_read]);
                 if (cmd[post_nl_read] == '\n' || cmd[post_nl_read] == '\r'){
                     goto space;
                 }
@@ -379,7 +382,7 @@ void handlePendingData(){
         // Ack with the number of node broadcasts we have handled
         // Ack doesn't get sent in the case of a bad parity
         char ack = 'Y';
-        radio.writeAckPayload( 1, &ack, sizeof(char) );
+        radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
 
         // Update the node data array and flag the data as changed
         node_temps[node_data.node_id] = node_data.temp;
