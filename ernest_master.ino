@@ -51,8 +51,7 @@ byte gwip[] = { 192, 168, 0, 1 };
 byte Ethernet::buffer[256];
 #define GET_ARG_BUFLEN 64
 char value_buffer[GET_ARG_BUFLEN];
-unsigned long lastConnectionTime = 0;           // last time we connected to the server, in millis
-boolean lastConnected = false;
+boolean OUTSTANDING_WWW_REQ = false;
 
 // Optional on-board sensor
 #define ALTITUDE 4.0
@@ -78,6 +77,7 @@ const char LCD_BOOT[] = "Booting...";
 const char LCD_TAKE_READING[] = "Taking a reading...";
 const char LCD_ETH_FAIL[] = "Ethernet init fail";
 const char LCD_LISTEN_RADIO[] = "Listen to radio";
+const char LCD_WAIT_TCP[] = "Wait for TCP...";
 const char LCD_BLANK[] = "";
 // Ethernet
 const char HTTP_PATH[] = "/control";
@@ -280,6 +280,16 @@ void postTempData(short node_id, float temp, float pressure, float humidity){
     sprintf(value_buffer, HTTP_ARGS, node_id, tmp_temp, tmp_pressure, tmp_humid);
 
     ether.browseUrl(PSTR("/control"), value_buffer, PSTR("nest.rhye.org"), http_handle_resp);
+    OUTSTANDING_WWW_REQ = 1;
+    setLCDDebugLine(LCD_WAIT_TCP);
+    short retries = 0;
+    while (OUTSTANDING_WWW_REQ && retries < 15){
+        // Handle low-level ethernet data
+        ether.packetLoop(ether.packetReceive());
+        delay(100);
+        retries++;
+    }
+    setLCDDebugLine(LCD_BLANK);
 }
 
 void http_handle_resp(byte status, word off, word len){
@@ -313,17 +323,20 @@ space:
                         // Turn on the heat
                         digitalWrite(RELAY_PIN, HIGH);
                         G_FURNACE_ON = 1;
+                        OUTSTANDING_WWW_REQ = 0;
                         return;
                     } else if (cmd[5] == 'n'){
                         // Turn off the heat
                         digitalWrite(RELAY_PIN, LOW);
                         G_FURNACE_ON = 0;
+                        OUTSTANDING_WWW_REQ = 0;
                         return;
                     }
                 }
             }
         }
     }
+    OUTSTANDING_WWW_REQ = 0;
 }
 
 uint64_t dec_of_float(double d){
@@ -381,7 +394,6 @@ void handlePendingData(){
 
         // Ack with the number of node broadcasts we have handled
         // Ack doesn't get sent in the case of a bad parity
-        char ack = 'Y';
         radio.writeAckPayload( 1, &readings_handled, sizeof(readings_handled) );
 
         // Update the node data array and flag the data as changed
